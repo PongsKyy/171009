@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Untuk Dita - Interactive Magic</title>
+    <style>
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background: #0a0507; 
+            font-family: 'Segoe UI', 'Roboto', sans-serif; 
+            touch-action: none; /* Mencegah scroll/zoom default browser */
+        }
+        
+        #video-container { 
+            position: absolute; 
+            bottom: 20px; 
+            right: 20px; 
+            width: 160px; height: 120px; 
+            transform: scaleX(-1); 
+            border-radius: 15px; 
+            overflow: hidden; 
+            border: 2px solid rgba(255, 182, 193, 0.4);
+            box-shadow: 0 0 15px rgba(255, 182, 193, 0.2);
+            z-index: 5; background: #000;
+        }
+        video { width: 100%; height: 100%; object-fit: cover; }
+
+        #loading {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: #0a0507;
+            display: flex; flex-direction: column;
+            justify-content: center; align-items: center;
+            color: #ffb6c1; z-index: 100;
+            transition: opacity 1s;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        .instructions {
+            margin-top: 20px; color: #f8d7da; text-align: center; line-height: 1.6; font-size: 1rem;
+        }
+        .highlight { 
+            color: #fff0f5; 
+            font-weight: bold; 
+            background: rgba(255, 182, 193, 0.2); 
+            padding: 2px 8px; 
+            border-radius: 10px;
+            border: 1px solid rgba(255, 182, 193, 0.3);
+            white-space: nowrap;
+        }
+        h1 { 
+            font-weight: 300; 
+            letter-spacing: 2px; 
+            text-shadow: 0 0 20px #ffb6c1; 
+            font-size: 1.8rem;
+            text-align: center;
+        }
+
+        /* Tampilan Khusus Mobile */
+        @media (max-width: 600px) {
+            #video-container {
+                width: 100px; height: 75px; /* Perkecil preview video */
+                bottom: 15px; right: 15px;
+                border-width: 1px;
+            }
+            h1 { font-size: 1.5rem; }
+            .instructions { font-size: 0.9rem; }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="loading">
+        <h1>✨ Memuat Sihir...</h1>
+        <div class="instructions">
+            Izinkan akses kamera.<br><br>
+            ✌️ <span class="highlight">2 Jari</span> = HATI 💖<br>
+            ☝️ <span class="highlight">Telunjuk</span> = "AKU"<br>
+            🫰 <span class="highlight">Finger Heart</span> = "SAYANG DITAAA"<br>
+            <br><i>Gerakkan tanganmu!</i>
+        </div>
+    </div>
+
+    <div id="video-container"><video id="webcam" autoplay playsinline muted></video></div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0";
+
+        // Cek apakah device adalah Mobile
+        const isMobile = window.innerWidth < 768;
+
+        // Konfigurasi Dinamis (Lebih ringan di HP)
+        const config = {
+            particleCount: isMobile ? 18000 : 45000, // Kurangi partikel di HP agar tidak berat
+            baseColor: new THREE.Color(0xffb6c1), 
+            activeColor: new THREE.Color(0xff69b4), 
+            particleSize: isMobile ? 0.055 : 0.038, // Partikel sedikit diperbesar di HP agar tetap terlihat padat
+            textScale: isMobile ? 0.012 : 0.022, // Perkecil skala teks agar muat di layar portrait
+            heartScale: isMobile ? 0.12 : 0.18,
+            handTrackingSpeed: 0.1,
+            floatSpeed: 1.5,
+            floatAmp: 0.15
+        };
+
+        let scene, camera, renderer, particles, geometry, material;
+        let handLandmarker, video;
+        let lastVideoTime = -1;
+        let posHeart, posAku, posSayang, posAbstract;
+        let currentMode = 'abstract';
+
+        let handPosition = new THREE.Vector3(0, 0, 0);
+        let currentGroupPosition = new THREE.Vector3(0, 0, 0);
+
+        async function init() {
+            scene = new THREE.Scene();
+            scene.fog = new THREE.FogExp2(0x0a0507, 0.025); 
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            
+            // Mundurkan kamera lebih jauh jika di HP agar teks panjang muat
+            camera.position.z = isMobile ? 14 : 8;
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            document.body.appendChild(renderer.domElement);
+
+            const controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.autoRotate = true;
+            controls.autoRotateSpeed = 0.5;
+            controls.enableZoom = !isMobile; // Matikan zoom di HP agar user fokus ke gesture
+            controls.minDistance = 2;
+            controls.maxDistance = 30;
+
+            createStarfield();
+
+            posHeart = generateHeartShape(config.particleCount);
+            posAku = generateTextShape("AKU", 160); 
+            posSayang = generateTextShape("SAYANG DITAAA", isMobile ? 70 : 80); // Ukuran font sedikit dikecilkan di HP
+            posAbstract = generateAbstractShape(config.particleCount);
+
+            geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(posAbstract), 3));
+
+            const sprite = new THREE.TextureLoader().load('https://threejs.org/examples/textures/sprites/disc.png');
+
+            material = new THREE.PointsMaterial({
+                color: config.baseColor,
+                size: config.particleSize,
+                map: sprite,
+                transparent: true,
+                opacity: 0.8,
+                blending: THREE.AdditiveBlending,
+                depthWrite: false
+            });
+
+            particles = new THREE.Points(geometry, material);
+            scene.add(particles);
+
+            try {
+                await setupMediaPipe();
+                const loadScreen = document.getElementById('loading');
+                loadScreen.style.opacity = 0;
+                setTimeout(() => loadScreen.style.display = 'none', 1000);
+                animate();
+            } catch (error) {
+                console.error(error);
+                alert("Gagal memuat kamera. Pastikan izin diberikan.");
+            }
+        }
+
+        function generateAbstractShape(count) {
+            const arr = new Float32Array(count * 3);
+            const spread = isMobile ? 15 : 25; // Sebaran partikel lebih sempit di HP
+            for (let i = 0; i < count; i++) {
+                arr[i * 3] = (Math.random() - 0.5) * spread;
+                arr[i * 3 + 1] = (Math.random() - 0.5) * spread; 
+                arr[i * 3 + 2] = (Math.random() - 0.5) * 12;
+            }
+            return arr;
+        }
+
+        function generateTextShape(text, fontSize) {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d', {willReadFrequently: true});
+            canvas.width = 2500; 
+            canvas.height = 800;
+            ctx.fillStyle = 'white';
+            ctx.font = `900 ${fontSize}px "Arial Black", sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(text, canvas.width/2, canvas.height/2);
+
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+            const validPoints = [];
+            const step = 2; 
+
+            for(let y=0; y<canvas.height; y+=step) { 
+                for(let x=0; x<canvas.width; x+=step) {
+                    if(imageData[(y*canvas.width + x)*4 + 3] > 128) {
+                        validPoints.push({
+                            x: (x - canvas.width/2) * config.textScale,
+                            y: -(y - canvas.height/2) * config.textScale
+                        });
+                    }
+                }
+            }
+
+            const arr = new Float32Array(config.particleCount * 3);
+            for(let i=0; i<config.particleCount; i++) {
+                const p = validPoints[i % validPoints.length];
+                const spread = 0.05; 
+                arr[i*3] = p.x + (Math.random() - 0.5) * spread; 
+                arr[i*3+1] = p.y + (Math.random() - 0.5) * spread;
+                arr[i*3+2] = (Math.random() - 0.5) * 0.15;
+            }
+            return arr;
+        }
+
+        function generateHeartShape(count) {
+            const arr = new Float32Array(count * 3);
+            let i = 0;
+            while (i < count) {
+                const x = (Math.random() - 0.5) * 45;
+                const y = (Math.random() - 0.5) * 45;
+                const z = (Math.random() - 0.5) * 20;
+                const nx = x / 18; const ny = y / 18;
+                
+                if (Math.pow(nx*nx + 9/4*ny*ny + z*z/100 - 1, 3) - nx*nx*z*z*z/200 - 9/80*ny*ny*z*z*z <= 0) {
+                     if (Math.pow(nx*nx + ny*ny - 1, 3) - nx*nx * ny*ny*ny <= 0) {
+                        arr[i*3] = x * config.heartScale;
+                        arr[i*3+1] = y * config.heartScale;
+                        arr[i*3+2] = z * config.heartScale;
+                        i++;
+                     }
+                }
+            }
+            return arr;
+        }
+
+        function createStarfield() {
+            const geo = new THREE.BufferGeometry();
+            const count = isMobile ? 1500 : 4000; // Kurangi bintang di HP
+            const pos = new Float32Array(count * 3);
+            for(let i=0; i<count*3; i++) {
+                pos[i] = (Math.random()-0.5) * 200;
+            }
+            geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+            const mat = new THREE.PointsMaterial({color: 0xffffff, size: 0.12, transparent: true, opacity: 0.6});
+            scene.add(new THREE.Points(geo, mat));
+        }
+
+        async function setupMediaPipe() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: {
+                    modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+                    delegate: "GPU"
+                },
+                runningMode: "VIDEO",
+                numHands: 1
+            });
+            
+            video = document.getElementById('webcam');
+            
+            // KONFIGURASI KAMERA MOBILE
+            const constraints = { 
+                video: { 
+                    facingMode: "user", // Memaksa kamera depan
+                    width: { ideal: isMobile ? 480 : 1280 }, // Resolusi rendah di HP untuk performa
+                    height: { ideal: isMobile ? 360 : 720 } 
+                } 
+            };
+
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            video.srcObject = stream;
+            return new Promise((resolve) => { video.onloadeddata = () => { video.play(); resolve(); }; });
+        }
+
+        function detectGesture(landmarks) {
+            if (!landmarks || landmarks.length === 0) return 'abstract';
+            const h = landmarks[0];
+
+            const isIndexUp = h[8].y < h[6].y; 
+            const isMiddleUp = h[12].y < h[10].y;
+            const isRingDown = h[16].y > h[14].y;
+            const isPinkyDown = h[20].y > h[18].y;
+            const distThumbIndex = Math.sqrt(Math.pow(h[4].x - h[8].x, 2) + Math.pow(h[4].y - h[8].y, 2));
+
+            if (distThumbIndex < 0.08 && !isMiddleUp) return 'sayang';
+            if (isIndexUp && isMiddleUp && isRingDown && isPinkyDown) return 'heart';
+            if (isIndexUp && !isMiddleUp && isRingDown && isPinkyDown) return 'aku';
+            
+            return 'abstract';
+        }
+
+        function updateHandPosition(landmarks) {
+            if (!landmarks || landmarks.length === 0) {
+                handPosition.set(0, 0, 0);
+                return;
+            }
+            const p = landmarks[0][9]; 
+            // Mapping koordinat disesuaikan agar tangan tidak "lari" terlalu jauh di layar kecil
+            const sensitivityX = isMobile ? -14 : -18;
+            const sensitivityY = isMobile ? -10 : -12;
+            
+            const targetX = (p.x - 0.5) * sensitivityX; 
+            const targetY = (p.y - 0.5) * sensitivityY;
+            handPosition.set(targetX, targetY, 0);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const currentTime = performance.now();
+            const timeSeconds = currentTime * 0.001;
+
+            if (video && video.readyState >= 2 && currentTime - lastVideoTime > 50) {
+                lastVideoTime = currentTime;
+                const results = handLandmarker.detectForVideo(video, currentTime);
+                
+                const newMode = detectGesture(results.landmarks);
+                if(newMode !== currentMode) {
+                    currentMode = newMode;
+                    if(currentMode !== 'abstract') material.color.lerp(config.activeColor, 0.2);
+                    else material.color.lerp(config.baseColor, 0.2);
+                }
+                updateHandPosition(results.landmarks);
+            }
+
+            if (currentMode !== 'abstract') {
+                currentGroupPosition.lerp(handPosition, config.handTrackingSpeed);
+            } else {
+                currentGroupPosition.lerp(new THREE.Vector3(0,0,0), 0.05);
+            }
+
+            const positions = geometry.attributes.position.array;
+            let targetArray;
+            
+            if (currentMode === 'aku') targetArray = posAku;
+            else if (currentMode === 'sayang') targetArray = posSayang;
+            else if (currentMode === 'heart') targetArray = posHeart;
+            else targetArray = posAbstract;
+
+            for (let i = 0; i < config.particleCount; i++) {
+                const ix = i * 3;
+                const iy = i * 3 + 1;
+                const iz = i * 3 + 2;
+
+                let tx = targetArray[ix] || 0;
+                let ty = targetArray[iy] || 0;
+                let tz = targetArray[iz] || 0;
+
+                tx += currentGroupPosition.x;
+                ty += currentGroupPosition.y;
+
+                const floatX = Math.sin(timeSeconds * config.floatSpeed + iy) * config.floatAmp;
+                const floatY = Math.cos(timeSeconds * config.floatSpeed * 0.8 + ix) * config.floatAmp;
+                const floatZ = Math.sin(timeSeconds * config.floatSpeed * 0.5 + iz) * config.floatAmp;
+
+                if (currentMode === 'abstract') {
+                    // Gerakan lebih tenang di mobile agar tidak pusing
+                    const calmFactor = isMobile ? 0.6 : 1.0;
+                    tx += Math.sin(timeSeconds * 0.5 + iy * 0.1) * 1.5 * calmFactor;
+                    ty += Math.cos(timeSeconds * 0.5 + ix * 0.1) * 1.5 * calmFactor;
+                } else {
+                    tx += floatX;
+                    ty += floatY;
+                    tz += floatZ;
+
+                    if (currentMode === 'heart') {
+                        const beat = 1 + Math.sin(timeSeconds * 3) * 0.05;
+                        let localTx = tx - currentGroupPosition.x;
+                        let localTy = ty - currentGroupPosition.y;
+                        localTx *= beat; 
+                        localTy *= beat; 
+                        tx = localTx + currentGroupPosition.x;
+                        ty = localTy + currentGroupPosition.y;
+                    }
+                }
+
+                const speed = currentMode === 'abstract' ? 0.02 : 0.08;
+                
+                positions[ix] += (tx - positions[ix]) * speed;
+                positions[iy] += (ty - positions[iy]) * speed;
+                positions[iz] += (tz - positions[iz]) * speed;
+            }
+
+            geometry.attributes.position.needsUpdate = true;
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        init();
+    </script>
+</body>
+</html>
